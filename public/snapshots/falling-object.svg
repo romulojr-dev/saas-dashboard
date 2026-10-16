@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480" role="img" aria-label="Placeholder camera frame: Falling Object">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b4252"/><stop offset="1" stop-color="#1e293b"/></linearGradient></defs>
+  <rect width="640" height="480" fill="url(#g)"/>
+  <path d="M0 400h640v80H0z" fill="#0f172a" opacity=".35"/>
+  <path d="M320 70v100" stroke="#cbd5e1" stroke-width="6"/><rect x="270" y="170" width="100" height="70" fill="#94a3b8" transform="rotate(-14 320 205)"/><path d="M300 270v40M340 270v50" stroke="#fca5a5" stroke-width="6" stroke-dasharray="10 8"/>
+  <g stroke="#f8fafc" stroke-width="4" fill="none" opacity=".8"><path d="M24 64V24h40M576 24h40v40M616 416v40h-40M64 456H24v-40"/></g>
+  <rect x="120" y="60" width="400" height="330" fill="none" stroke="#f87171" stroke-width="3" stroke-dasharray="10 8"/>
+  <rect x="24" y="404" width="236" height="44" rx="6" fill="#b91c1c"/>
+  <text x="44" y="433" font-family="system-ui, sans-serif" font-size="22" font-weight="700" fill="#fff">FALLING OBJECT</text>
+  <text x="608" y="52" text-anchor="end" font-family="ui-monospace, monospace" font-size="18" fill="#e2e8f0">● REC  PLACEHOLDER</text>
+</svg>

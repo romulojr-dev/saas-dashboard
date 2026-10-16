@@ -21,7 +21,7 @@ export function AppSidebar() {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton render={<Link prefetch={false} href="/dashboard/default" />}>
+            <SidebarMenuButton render={<Link prefetch={false} href="/dashboard" />}>
               <Command />
               <span className="font-semibold text-base">Vertise</span>
             </SidebarMenuButton>

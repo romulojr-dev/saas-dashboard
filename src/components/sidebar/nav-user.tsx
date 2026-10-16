@@ -17,8 +17,8 @@ import { getInitials } from "@/lib/utils";
 export function NavUser() {
   const { isMobile } = useSidebar();
   const user = {
-    name: "Romulo Ramos Jr.",
-    email: "romu.dev@outlook.com",
+    name: "Tony Stark",
+    email: "tony.stark@outlook.com",
     avatar: "/avatars/romulo.png"
   }
 
