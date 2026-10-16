@@ -65,7 +65,11 @@ export function PageHeader({
       <h1 className="font-heading font-semibold text-2xl tracking-tight">{title}</h1>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-sm">
         <span>{subtitle}</span>
-        {(lastUpdated || hasError) && <span aria-hidden="true">·</span>}
+        {lastUpdated && (
+          <span aria-hidden="true" className="hidden sm:inline">
+            ·
+          </span>
+        )}
         <LastUpdated lastUpdated={lastUpdated} hasError={hasError} onRetry={onRetry} live={live} />
       </div>
     </header>

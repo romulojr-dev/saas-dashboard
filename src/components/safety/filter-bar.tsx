@@ -63,6 +63,8 @@ function CustomRangePicker({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-auto">
         <Calendar
+          // The theme's muted range fill is nearly invisible on the dark popover; tint it more strongly.
+          className="**:data-[range-middle=true]:bg-primary/20!"
           mode="range"
           selected={draft}
           onSelect={setDraft}

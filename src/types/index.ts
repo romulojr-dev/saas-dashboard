@@ -240,7 +240,7 @@ export interface LocationData {
 
 // ---- Page 2: Hazard Detection ----
 /** Time-series bucket size, chosen from the length of the date range. */
-export type BucketGranularity = 'hour' | 'day' | 'week';
+export type BucketGranularity = 'hour' | 'day' | 'week' | 'month';
 
 export interface PpeBucket {
   start: string; // ISO Date string
@@ -293,5 +293,97 @@ export interface HazardsData {
   geofences: Geofence[];
   locationDensity: DensityCell[];
   snapshots: HazardSnapshot[]; // newest first
+  generatedAt: string;
+}
+
+// ---- Page 3: Alerts & Response ----
+export interface OpenResolvedBucket {
+  start: string;
+  open: number; // raised in the bucket and not yet resolved
+  resolved: number; // raised in the bucket and since resolved
+}
+
+export interface ResponseBucket {
+  start: string;
+  minutes: number | null; // mean time to acknowledge; null when nothing was acknowledged
+}
+
+export interface AlertsData {
+  kpis: {
+    openAlerts: number; // live, regardless of date range
+    avgResponseMin: number | null;
+    avgResponsePrevMin: number | null;
+    resolvedRate: number | null; // percent of alerts raised in the period that are resolved
+    criticalToday: number;
+  };
+  granularity: BucketGranularity;
+  bySeverity: { severity: AlertSeverity; count: number }[];
+  responseTrend: ResponseBucket[];
+  openVsResolved: OpenResolvedBucket[];
+  log: SafetyEvent[]; // newest first
+  generatedAt: string;
+}
+
+// ---- Page 4: Workforce & Trends ----
+export interface RepeatViolator {
+  rank: number;
+  workerId: string;
+  crew: string;
+  violations: number; // PPE violations + restricted-zone breaches in the period
+  mostCommon: HazardType;
+}
+
+export interface SafetyTrendBucket {
+  start: string;
+  hazardEvents: number;
+  ppeViolations: number;
+  nearMisses: number;
+}
+
+export interface WorkforceData {
+  kpis: {
+    workerHours: number;
+    ratePer100: number | null; // hazard events per 100 worker-hours
+    ratePer100Prev: number | null;
+    activeCrews: number;
+    repeatViolators: number;
+    repeatThreshold: number; // violations in the period that make a "repeat violator"
+  };
+  weeklyRate: WeeklyHazardRate[]; // last 12 weeks, oldest first
+  violationsByCrew: CountByKey[];
+  topViolators: RepeatViolator[]; // top 10
+  safetyTrend: { weekly: SafetyTrendBucket[]; monthly: SafetyTrendBucket[] };
+  generatedAt: string;
+}
+
+// ---- Page 5: Device Health ----
+export type DeviceStatus = 'Online' | 'Offline';
+export type CameraStatus = 'OK' | 'Obstructed' | 'Blackout' | 'Off';
+
+// A hard hat's sensor unit (camera + GPS)
+export interface Device {
+  id: string; // e.g., "HH-1014"
+  workerId: string;
+  crewId: string;
+  status: DeviceStatus;
+  battery: number; // percent
+  gpsSignal: number | null; // 0–100 fix quality; null when there's no fix
+  cameraStatus: CameraStatus;
+  lastSeen: string; // ISO Date string of the last report
+  firmware: string;
+}
+
+export interface DevicesData {
+  kpis: {
+    online: number;
+    offline: number;
+    lowBattery: number;
+    gpsQuality: number | null; // mean fix quality of online devices, percent
+    cameraEventsToday: number; // obstruction + blackout events since midnight
+  };
+  onlineByHour: CountBucket[]; // last 24 hours, oldest first
+  batteryBuckets: CountByKey[]; // 0–20, 21–50, 51–80, 81–100
+  devices: Device[];
+  thresholds: { lowBatteryPct: number; staleAfterMin: number; latestFirmware: string };
   generatedAt: string;
 }

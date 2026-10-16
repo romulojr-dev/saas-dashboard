@@ -39,3 +39,14 @@ export function sequentialColor(value: number, max: number, minStep = 0) {
   const index = minStep + Math.min(steps - 1, Math.floor((value / max) * steps));
   return SEQUENTIAL_BLUE[index];
 }
+
+/**
+ * Severity colours for charts. Reserved for severity only (never reused for a series);
+ * charts using them always show the severity name next to the colour.
+ */
+export const SEVERITY_COLORS = {
+  Critical: { light: "#b91c1c", dark: "#ef4444" },
+  High: { light: "#ea580c", dark: "#f97316" },
+  Medium: { light: "#ca8a04", dark: "#eab308" },
+  Low: { light: "#2a78d6", dark: "#3987e5" },
+} as const;

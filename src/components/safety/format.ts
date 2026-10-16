@@ -50,14 +50,22 @@ export function formatDuration(seconds: number) {
 
 const weekdayDateFormatter = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
 
-/** Axis label for a time bucket: "09:00", "Oct 13" or "Oct 13" (week start). */
-export function formatBucketTick(iso: string, granularity: "hour" | "day" | "week") {
-  return granularity === "hour" ? formatClock(iso) : formatShortDate(iso);
+const monthFormatter = new Intl.DateTimeFormat("en-US", { month: "short" });
+const monthYearFormatter = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" });
+
+type Granularity = "hour" | "day" | "week" | "month";
+
+/** Axis label for a time bucket: "09:00", "Oct 13", "Oct 13" (week start) or "Oct". */
+export function formatBucketTick(iso: string, granularity: Granularity) {
+  if (granularity === "hour") return formatClock(iso);
+  if (granularity === "month") return monthFormatter.format(new Date(iso));
+  return formatShortDate(iso);
 }
 
-/** Tooltip / table label for a time bucket: "Oct 13, 09:00", "Mon, Oct 13" or "Week of Oct 13". */
-export function formatBucketLabel(iso: string, granularity: "hour" | "day" | "week") {
+/** Tooltip / table label: "Oct 13, 09:00", "Mon, Oct 13", "Week of Oct 13" or "October 2026". */
+export function formatBucketLabel(iso: string, granularity: Granularity) {
   if (granularity === "hour") return formatDateTime(iso);
   if (granularity === "day") return weekdayDateFormatter.format(new Date(iso));
+  if (granularity === "month") return monthYearFormatter.format(new Date(iso));
   return `Week of ${formatShortDate(iso)}`;
 }

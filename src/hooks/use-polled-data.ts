@@ -10,7 +10,10 @@ export interface PolledData<T> {
   error: Error | null;
   /** When `data` was last refreshed. */
   lastUpdated: Date | null;
+  /** Retry from scratch: shows the loading state until the new response arrives. */
   refetch: () => void;
+  /** Refetch now in the background (e.g. after a mutation); current data stays on screen. */
+  refresh: () => void;
 }
 
 interface Options {
@@ -26,6 +29,7 @@ export function usePolledData<T>(
   { key = "", intervalMs = LIVE_POLL_MS }: Options = {},
 ): PolledData<T> {
   const [reloadCount, setReloadCount] = useState(0);
+  const [refreshCount, setRefreshCount] = useState(0);
   const requestKey = `${key}#${reloadCount}`;
 
   // Results are tagged with the key they were fetched for, so a new key reads as
@@ -58,9 +62,11 @@ export function usePolledData<T>(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [requestKey, intervalMs]);
+    // refreshCount restarts the poll loop with an immediate fetch, keeping the same key.
+  }, [requestKey, intervalMs, refreshCount]);
 
   const refetch = useCallback(() => setReloadCount((count) => count + 1), []);
+  const refresh = useCallback(() => setRefreshCount((count) => count + 1), []);
 
   const data = result?.key === requestKey ? result.data : null;
   const error = failure?.key === requestKey ? failure.error : null;
@@ -71,5 +77,6 @@ export function usePolledData<T>(
     error,
     lastUpdated: data === null ? null : result!.at,
     refetch,
+    refresh,
   };
 }

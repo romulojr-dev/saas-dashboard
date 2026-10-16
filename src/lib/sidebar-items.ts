@@ -91,22 +91,22 @@ export const sidebarItems: NavGroup[] = [
       },
     ],
   },
-  {
-    id: 2,
-    label: "CRM",
-    items: [
-      {
-        id: "leads",
-        title: "Leads",
-        url: "/leads",
-        icon: ChartBar,
-      },
-      {
-        id: "campaigns",
-        title: "Campaigns",
-        url: "/campaigns",
-        icon: Megaphone,
-      },
-    ],
-  },
+  // {
+  //   id: 2,
+  //   label: "CRM",
+  //   items: [
+  //     {
+  //       id: "leads",
+  //       title: "Leads",
+  //       url: "/leads",
+  //       icon: ChartBar,
+  //     },
+  //     {
+  //       id: "campaigns",
+  //       title: "Campaigns",
+  //       url: "/campaigns",
+  //       icon: Megaphone,
+  //     },
+  //   ],
+  // },
 ];

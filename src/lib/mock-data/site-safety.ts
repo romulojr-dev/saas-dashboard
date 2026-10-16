@@ -1,11 +1,14 @@
 import { resolveDateRange } from "@/lib/safety-filters";
 import type {
   AlertSeverity,
+  AlertsData,
   BucketGranularity,
   CountBucket,
   CountByKey,
   Crew,
   DensityCell,
+  Device,
+  DevicesData,
   DrillResult,
   EventCategory,
   FilterOptions,
@@ -15,11 +18,15 @@ import type {
   HazardType,
   HourDayCell,
   LocationData,
+  OpenResolvedBucket,
   ParetoRow,
   PpeBucket,
   RateBucket,
+  RepeatViolator,
+  ResponseBucket,
   SafetyEvent,
   SafetyFilters,
+  SafetyTrendBucket,
   Shift,
   SiteOverview,
   SiteProject,
@@ -27,6 +34,7 @@ import type {
   SiteZone,
   WeeklyHazardRate,
   WorkerZoneTime,
+  WorkforceData,
 } from "@/types";
 
 /*
@@ -255,7 +263,7 @@ const snapshotImages: Partial<Record<HazardType, string>> = {
 export const safetyOfficers = ["SO-01", "SO-02", "SO-03", "SO-04"];
 export const MAN_DOWN_THRESHOLD_MIN = 5;
 const LAST_INCIDENT = new Date("2026-08-27T14:30:00Z").getTime();
-const HISTORY_DAYS = 84; // 12 weeks
+const HISTORY_DAYS = 182; // 26 weeks, enough for a 6-month trend
 
 // ---------------------------------------------------------------------------
 // Geometry
@@ -322,6 +330,81 @@ interface SimulationState {
   nextEventId: number;
   lastTick: number;
   historyStart: number; // earliest time the event log covers
+  devices: DeviceState[];
+}
+
+interface DeviceState extends Device {
+  cameraEventsToday: number;
+  cameraEventsDay: number; // start of the day the counter belongs to
+  obstructedTicks: number; // ticks left before an obstruction clears
+}
+
+export const LOW_BATTERY_PCT = 20;
+export const STALE_AFTER_MIN = 10;
+export const LATEST_FIRMWARE = "4.2.1";
+
+/** One helmet per worker. A few start with problems so the Device Health page has something to show. */
+function createDevices(workers: SiteWorker[], now: number): DeviceState[] {
+  const special: Record<string, Partial<Device> & { minutesAgo?: number }> = {
+    "W-031": { status: "Offline", battery: 0, minutesAgo: 47 }, // flat battery
+    "W-058": { status: "Offline", battery: 64, minutesAgo: 18 }, // lost connection
+    "W-073": { status: "Offline", battery: 3, minutesAgo: 92 },
+    "W-007": { battery: 17 },
+    "W-064": { battery: 12 },
+    "W-035": { gpsSignal: 32 }, // deep in the excavation
+    "W-044": { cameraStatus: "Obstructed" },
+    "W-067": { cameraStatus: "Blackout" },
+  };
+  const outdated = new Set(["W-018", "W-052", "W-070"]);
+  return workers.map((worker, i) => {
+    const overrides = special[worker.id] ?? {};
+    const status = overrides.status ?? "Online";
+    const lastSeen =
+      status === "Offline" ? new Date(now - (overrides.minutesAgo ?? 30) * MINUTE).toISOString() : worker.lastSeen;
+    return {
+      id: `HH-${1001 + i}`,
+      workerId: worker.id,
+      crewId: worker.crewId,
+      status,
+      battery: overrides.battery ?? Math.round(between(35, 99)),
+      gpsSignal: status === "Offline" ? null : (overrides.gpsSignal ?? Math.round(between(62, 98))),
+      cameraStatus: status === "Offline" ? "Off" : (overrides.cameraStatus ?? "OK"),
+      lastSeen,
+      firmware: outdated.has(worker.id) ? "4.1.8" : LATEST_FIRMWARE,
+      cameraEventsToday: Math.floor(between(0, 2.2)) + (overrides.cameraStatus ? 1 : 0),
+      cameraEventsDay: startOfDay(now),
+      obstructedTicks: overrides.cameraStatus ? 999 : 0,
+    };
+  });
+}
+
+/** Batteries drain, flat helmets drop offline, and cameras occasionally get obstructed. */
+function tickDevices(current: SimulationState, now: number) {
+  const workerById = new Map(current.workers.map((worker) => [worker.id, worker]));
+  for (const device of current.devices) {
+    if (device.cameraEventsDay !== startOfDay(now)) {
+      device.cameraEventsToday = 0;
+      device.cameraEventsDay = startOfDay(now);
+    }
+    if (device.status === "Offline") continue;
+    device.battery = Math.max(0, Math.round((device.battery - between(0.02, 0.08)) * 100) / 100);
+    if (device.battery === 0) {
+      device.status = "Offline";
+      device.gpsSignal = null;
+      device.cameraStatus = "Off";
+      continue;
+    }
+    device.lastSeen = workerById.get(device.workerId)?.lastSeen ?? device.lastSeen;
+    device.gpsSignal = Math.round(Math.min(99, Math.max(20, (device.gpsSignal ?? 70) + between(-3, 3))));
+    if (device.obstructedTicks > 0) {
+      device.obstructedTicks -= 1;
+      if (device.obstructedTicks === 0) device.cameraStatus = "OK";
+    } else if (random() < 0.004) {
+      device.cameraStatus = random() < 0.8 ? "Obstructed" : "Blackout";
+      device.obstructedTicks = Math.round(between(3, 18));
+      device.cameraEventsToday += 1;
+    }
+  }
 }
 
 const TICK_MS = 10 * SECOND;
@@ -431,7 +514,8 @@ function createInitialState(now: number): SimulationState {
     const hoursToday = shiftHoursOn(day);
     if (hoursToday === 0) continue;
     const ageWeeks = (now - day) / (7 * DAY);
-    const trend = 0.75 + ageWeeks * 0.045; // hazard rate drifts down over time
+    // Hazard rate eases down over time as the safety programme takes hold.
+    const trend = 0.75 + 0.6 * (1 - Math.exp(-ageWeeks / 10));
 
     for (const worker of workers) {
       const crew = crewById.get(worker.crewId)!;
@@ -467,6 +551,20 @@ function createInitialState(now: number): SimulationState {
     }
   }
 
+  // A few alerts still in progress, so there's always something to triage on first load.
+  const inProgress: [string, HazardType, number][] = [
+    ["W-021", "No Harness at Height", 4],
+    ["W-038", "Machinery Near-Miss", 17],
+    ["W-011", "No Hard Hat", 33],
+  ];
+  for (const [workerId, type, minutesAgo] of inProgress) {
+    const worker = workers.find((w) => w.id === workerId)!;
+    const occurredAt = now - minutesAgo * MINUTE;
+    const event = makeEvent(0, worker, type, occurredAt, crewById.get(worker.crewId)!.homeZoneId, [worker.lat, worker.lng]);
+    if (minutesAgo > 30) acknowledge(event, occurredAt + 3 * MINUTE);
+    events.push(event);
+  }
+
   events.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   events.forEach((event, i) => {
     event.id = `AL-${1001 + i}`;
@@ -483,6 +581,11 @@ function createInitialState(now: number): SimulationState {
     return { id: `DR-${i + 1}`, date: new Date(date).toISOString(), musterMinutes: drillBase[i], byCrew };
   });
 
+  const devices = createDevices(workers, now);
+  for (const device of devices) {
+    if (device.status === "Offline") workers.find((w) => w.id === device.workerId)!.lastSeen = device.lastSeen;
+  }
+
   return {
     workers,
     events,
@@ -491,12 +594,18 @@ function createInitialState(now: number): SimulationState {
     nextEventId: 1001 + events.length,
     lastTick: now,
     historyStart: firstDay,
+    devices,
   };
 }
 
 /** One live tick: workers move, new events arrive, open events get handled. */
 function tick(current: SimulationState, now: number) {
+  const offlineWorkers = new Set(
+    current.devices.filter((device) => device.status === "Offline").map((device) => device.workerId),
+  );
   current.workers = current.workers.map((worker) => {
+    // An offline helmet sends no GPS, so its worker's position and "last seen" freeze.
+    if (offlineWorkers.has(worker.id)) return worker;
     // ~4% chance per tick that a helmet misses a GPS fix (e.g., inside the core).
     if (random() < 0.04) return worker;
     // Random walk with a gentle pull back toward the crew's work area.
@@ -527,6 +636,8 @@ function tick(current: SimulationState, now: number) {
     const position: [number, number] = [worker.lat, worker.lng];
     current.events.push(makeEvent(current.nextEventId++, worker, type, now, zoneIdAt(...position, worker.crewId), position));
   }
+
+  tickDevices(current, now);
 
   // Safety officers work the queue, oldest first.
   const oldestOpen = open.find((event) => event.status === "Open");
@@ -1004,6 +1115,273 @@ export function getMockHazardsData(filters: SafetyFilters, now = Date.now()): Ha
     geofences,
     locationDensity: densityFromPoints(events),
     snapshots: newestFirst(events.filter((event) => event.snapshotUrl)).slice(0, MAX_GALLERY).map(toSnapshot),
+    generatedAt: new Date(now).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Alerts & Response
+// ---------------------------------------------------------------------------
+
+const SEVERITIES: AlertSeverity[] = ["Critical", "High", "Medium", "Low"];
+
+/** Minutes from raised to acknowledged, or null if not acknowledged yet. */
+function responseMinutes(event: SafetyEvent) {
+  if (!event.acknowledgedAt) return null;
+  return (new Date(event.acknowledgedAt).getTime() - eventTime(event)) / MINUTE;
+}
+
+function meanResponse(events: SafetyEvent[]) {
+  const times = events.flatMap((event) => {
+    const minutes = responseMinutes(event);
+    return minutes === null ? [] : [minutes];
+  });
+  return times.length ? Math.round((times.reduce((a, b) => a + b, 0) / times.length) * 10) / 10 : null;
+}
+
+export function getMockAlertsData(filters: SafetyFilters, now = Date.now()): AlertsData {
+  const sim = getState(now);
+  const window = resolveDateRange(filters, now);
+  const prevWindow = previousWindow(window);
+  const events = filterEvents(sim.events, filters, now, window);
+  const prevEvents = prevWindow.start >= sim.historyStart ? filterEvents(sim.events, filters, now, prevWindow) : null;
+
+  // "Open" and "today" are live counts: zone / crew / shift apply, the date range doesn't.
+  const allTime: TimeWindow = { start: sim.historyStart, end: now };
+  const liveScope = filterEvents(sim.events, filters, now, allTime);
+  const today: TimeWindow = { start: startOfDay(now), end: now };
+
+  const buckets = makeBuckets(window);
+  const openVsResolved: OpenResolvedBucket[] = buckets.starts.map((start) => ({
+    start: new Date(start).toISOString(),
+    open: 0,
+    resolved: 0,
+  }));
+  const byBucket: SafetyEvent[][] = buckets.starts.map(() => []);
+  for (const event of events) {
+    const i = buckets.indexOf(eventTime(event));
+    if (i < 0) continue;
+    byBucket[i].push(event);
+    openVsResolved[i][event.status === "Resolved" ? "resolved" : "open"] += 1;
+  }
+  const responseTrend: ResponseBucket[] = buckets.starts.map((start, i) => ({
+    start: new Date(start).toISOString(),
+    minutes: meanResponse(byBucket[i]),
+  }));
+
+  const resolved = events.filter((event) => event.status === "Resolved").length;
+
+  return {
+    kpis: {
+      openAlerts: liveScope.filter((event) => event.status !== "Resolved").length,
+      avgResponseMin: meanResponse(events),
+      avgResponsePrevMin: prevEvents ? meanResponse(prevEvents) : null,
+      resolvedRate: events.length ? Math.round((resolved / events.length) * 1000) / 10 : null,
+      criticalToday: liveScope.filter((event) => event.severity === "Critical" && eventTime(event) >= today.start).length,
+    },
+    granularity: buckets.granularity,
+    bySeverity: SEVERITIES.map((severity) => ({
+      severity,
+      count: events.filter((event) => event.severity === severity).length,
+    })),
+    responseTrend,
+    openVsResolved,
+    log: newestFirst(events),
+    generatedAt: new Date(now).toISOString(),
+  };
+}
+
+function findEvent(id: string, now: number) {
+  const event = getState(now).events.find((e) => e.id === id);
+  if (!event) throw new Error(`Alert ${id} was not found.`);
+  return event;
+}
+
+/** Marks an open alert as acknowledged by `officer`. Returns the updated alert. */
+export function acknowledgeMockEvent(id: string, officer: string, now = Date.now()): SafetyEvent {
+  const event = findEvent(id, now);
+  if (event.status !== "Open") throw new Error(`Alert ${id} is already ${event.status.toLowerCase()}.`);
+  acknowledge(event, now, officer);
+  return { ...event };
+}
+
+/** Resolves an alert (acknowledging it first if needed). Returns the updated alert. */
+export function resolveMockEvent(id: string, officer: string, now = Date.now()): SafetyEvent {
+  const event = findEvent(id, now);
+  if (event.status === "Resolved") throw new Error(`Alert ${id} is already resolved.`);
+  if (event.status === "Open") acknowledge(event, now, officer);
+  resolve(event, now);
+  return { ...event };
+}
+
+// ---------------------------------------------------------------------------
+// Workforce & Trends
+// ---------------------------------------------------------------------------
+
+export const REPEAT_VIOLATOR_THRESHOLD = 3;
+const VIOLATION_CATEGORIES: EventCategory[] = ["PPE", "Zone breach"];
+
+function hazardRate(events: SafetyEvent[], workerHours: number) {
+  return workerHours > 0 ? Math.round((events.length / workerHours) * 10000) / 100 : null;
+}
+
+/** Hazard events, PPE violations and near-misses per bucket (week or calendar month). */
+function safetyTrend(events: SafetyEvent[], starts: number[], end: number): SafetyTrendBucket[] {
+  const buckets = starts.map((start) => ({ start: new Date(start).toISOString(), hazardEvents: 0, ppeViolations: 0, nearMisses: 0 }));
+  for (const event of events) {
+    const time = eventTime(event);
+    if (time < starts[0] || time >= end) continue;
+    let i = starts.length - 1;
+    while (i > 0 && starts[i] > time) i--;
+    buckets[i].hazardEvents += 1;
+    if (event.category === "PPE") buckets[i].ppeViolations += 1;
+    if (event.category === "Near-miss") buckets[i].nearMisses += 1;
+  }
+  return buckets;
+}
+
+export function getMockWorkforceData(filters: SafetyFilters, now = Date.now()): WorkforceData {
+  const sim = getState(now);
+  const window = resolveDateRange(filters, now);
+  const prevWindow = previousWindow(window);
+  const roster = rosterFor(filters, sim.workers);
+
+  const events = filterEvents(sim.events, filters, now, window);
+  const workerHours = workerHoursIn(window, roster);
+  const prevEvents = prevWindow.start >= sim.historyStart ? filterEvents(sim.events, filters, now, prevWindow) : null;
+
+  // Violations are things a worker did: PPE lapses and restricted-zone entries.
+  const violations = events.filter((event) => VIOLATION_CATEGORIES.includes(event.category));
+  const byWorker = new Map<string, SafetyEvent[]>();
+  for (const event of violations) byWorker.set(event.workerId, [...(byWorker.get(event.workerId) ?? []), event]);
+
+  const mostCommon = (list: SafetyEvent[]) => countBy(list, (event) => event.type, (type) => type)[0].key as HazardType;
+  const ranked = [...byWorker.entries()]
+    .map(([workerId, list]) => ({
+      workerId,
+      crew: sim.workers.find((worker) => worker.id === workerId)?.crew ?? "",
+      violations: list.length,
+      mostCommon: mostCommon(list),
+    }))
+    .sort((a, b) => b.violations - a.violations || a.workerId.localeCompare(b.workerId));
+  const topViolators: RepeatViolator[] = ranked
+    .filter((row) => row.violations >= REPEAT_VIOLATOR_THRESHOLD)
+    .slice(0, 10)
+    .map((row, i) => ({ rank: i + 1, ...row }));
+
+  // Every crew in scope is listed, even at zero, so crews compare like with like.
+  const crewCounts = countBy(violations, (event) => event.crewId, (id) => crewById.get(id)?.name ?? id);
+  const crewsInScope = crewProfiles.filter((crew) => roster.some((worker) => worker.crewId === crew.id));
+  const violationsByCrew = crewsInScope
+    .map((crew) => crewCounts.find((row) => row.key === crew.id) ?? { key: crew.id, label: crew.name, count: 0 })
+    .sort((a, b) => b.count - a.count);
+
+  // Trend views use fixed windows (12 weeks / 6 months); zone, crew and shift still apply.
+  const scoped = filterEvents(sim.events, filters, now, { start: sim.historyStart, end: now });
+  const thisWeek = startOfWeek(now);
+  const weekStarts = Array.from({ length: 12 }, (_, i) => thisWeek - (11 - i) * 7 * DAY);
+  const monthStarts = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(1);
+    d.setMonth(d.getMonth() - (5 - i));
+    return d.getTime();
+  });
+
+  return {
+    kpis: {
+      workerHours,
+      ratePer100: hazardRate(events, workerHours),
+      ratePer100Prev: prevEvents ? hazardRate(prevEvents, workerHoursIn(prevWindow, roster)) : null,
+      activeCrews: workingDays(window).length > 0 ? crewsInScope.length : 0,
+      repeatViolators: ranked.filter((row) => row.violations >= REPEAT_VIOLATOR_THRESHOLD).length,
+      repeatThreshold: REPEAT_VIOLATOR_THRESHOLD,
+    },
+    weeklyRate: weeklyHazardRates(scoped, roster, now),
+    violationsByCrew,
+    topViolators,
+    safetyTrend: {
+      weekly: safetyTrend(scoped, weekStarts, now),
+      monthly: safetyTrend(scoped, monthStarts, now),
+    },
+    generatedAt: new Date(now).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Device Health
+// ---------------------------------------------------------------------------
+
+/** Deterministic 0..1 value per (hour, salt), so past hours don't change between polls. */
+function hashUnit(hourStart: number, salt: number) {
+  let h = Math.imul((hourStart / HOUR) ^ (salt * 2654435761), 2246822519);
+  h ^= h >>> 13;
+  h = Math.imul(h, 3266489917);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+export function getMockDevicesData(filters: SafetyFilters, now = Date.now()): DevicesData {
+  const sim = getState(now);
+  // Devices follow their worker: zone (current position), crew and shift apply; the date range doesn't.
+  const workerIds = new Set(filterWorkers(sim.workers, filters).map((worker) => worker.id));
+  const devices: Device[] = sim.devices
+    .filter((device) => workerIds.has(device.workerId))
+    .map(
+      ({ id, workerId, crewId, status, battery, gpsSignal, cameraStatus, lastSeen, firmware }): Device => ({
+        id,
+        workerId,
+        crewId,
+        status,
+        battery: Math.round(battery),
+        gpsSignal,
+        cameraStatus,
+        lastSeen,
+        firmware,
+      }),
+    );
+  const states = sim.devices.filter((device) => workerIds.has(device.workerId));
+
+  const online = devices.filter((device) => device.status === "Online");
+  const gps = online.flatMap((device) => (device.gpsSignal === null ? [] : [device.gpsSignal]));
+
+  // Last 24 hourly buckets; the current hour shows the live count, earlier hours a
+  // plausible history (battery swaps at shift change and lunch).
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const onlineByHour: CountBucket[] = Array.from({ length: 24 }, (_, i) => {
+    const start = currentHour.getTime() - (23 - i) * HOUR;
+    if (i === 23) return { start: new Date(start).toISOString(), count: online.length };
+    const hour = new Date(start).getHours();
+    const swaps = [6, 12, 18].includes(hour) ? Math.ceil(devices.length * 0.15) : 0;
+    const dropouts = Math.floor(hashUnit(start, 7) * Math.max(1, devices.length * 0.12));
+    return { start: new Date(start).toISOString(), count: Math.max(0, devices.length - swaps - dropouts) };
+  });
+
+  const bucketDefs: [string, string, number, number][] = [
+    ["0-20", "0–20%", 0, 20],
+    ["21-50", "21–50%", 21, 50],
+    ["51-80", "51–80%", 51, 80],
+    ["81-100", "81–100%", 81, 100],
+  ];
+  const batteryBuckets = bucketDefs.map(([key, label, min, max]) => ({
+    key,
+    label,
+    count: devices.filter((device) => Math.round(device.battery) >= min && Math.round(device.battery) <= max).length,
+  }));
+
+  return {
+    kpis: {
+      online: online.length,
+      offline: devices.length - online.length,
+      lowBattery: devices.filter((device) => device.battery < LOW_BATTERY_PCT).length,
+      gpsQuality: gps.length ? Math.round(gps.reduce((a, b) => a + b, 0) / gps.length) : null,
+      cameraEventsToday: states.reduce((sum, device) => sum + device.cameraEventsToday, 0),
+    },
+    onlineByHour,
+    batteryBuckets,
+    devices,
+    thresholds: { lowBatteryPct: LOW_BATTERY_PCT, staleAfterMin: STALE_AFTER_MIN, latestFirmware: LATEST_FIRMWARE },
     generatedAt: new Date(now).toISOString(),
   };
 }
